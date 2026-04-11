@@ -21,7 +21,26 @@ import platform
 
 # ─── Constants ────────────────────────────────────────────────────────────────
 
-SCRIPT_DIR   = os.path.dirname(os.path.abspath(__file__))
+# DaVinci Resolve's scripting host does not set __file__; fall back to the
+# standard Workflow Integration Plugins folder for the current platform.
+try:
+    SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
+except NameError:
+    if sys.platform == "darwin":
+        SCRIPT_DIR = os.path.expanduser(
+            "~/Library/Application Support/Blackmagic Design/"
+            "DaVinci Resolve/Workflow Integration Plugins"
+        )
+    elif sys.platform == "win32":
+        SCRIPT_DIR = os.path.join(
+            os.environ.get("APPDATA", ""),
+            r"Blackmagic Design\DaVinci Resolve\Support\Workflow Integration Plugins",
+        )
+    else:
+        SCRIPT_DIR = os.path.expanduser(
+            "~/.local/share/DaVinciResolve/Workflow Integration Plugins"
+        )
+
 SETTINGS_FILE = os.path.join(SCRIPT_DIR, "MediaImportRules.json")
 
 CONDITIONS = [
