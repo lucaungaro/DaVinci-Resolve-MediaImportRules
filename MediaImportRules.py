@@ -54,7 +54,13 @@ CONDITION_PROPS = {
     "Camera Type":     "Camera Type",
 }
 
-ACTIONS = ["Add to group", "Clip color", "Flags", "Input sizing preset", "ACES Gamut Compress"]
+ACTIONS = [
+    "Add to group",
+    "Clip color",
+    "Flags",
+    # "Input sizing preset",   # standby — API investigation pending
+    # "ACES Gamut Compress",   # standby — API investigation pending
+]
 
 CLIP_COLORS = [
     "Orange", "Apricot", "Yellow", "Lime", "Olive", "Green",
@@ -62,7 +68,7 @@ CLIP_COLORS = [
     "Tan", "Beige", "Brown", "Chocolate",
 ]
 FLAG_COLORS  = ["Red", "Blue", "Green", "Yellow", "Cyan", "Magenta"]
-ACES_OPTIONS = ["None", "Standard - LMT"]
+# ACES_OPTIONS = ["None", "Standard - LMT"]  # standby
 
 KEY_ESCAPE = 16777216
 KEY_RETURN = 16777220
@@ -81,40 +87,12 @@ def _fetch_color_groups():
         return []
     return list(project.GetColorGroupsList() or [])
 
-def _fetch_input_sizing_presets():
-    """
-    Return available input sizing preset names.
-    project.GetPresetList() returns the project-level presets (which include
-    the Input Scaling presets visible in the right-click menu).
-    Falls back to scanning clip properties if the call returns nothing useful.
-    """
-    if project:
-        try:
-            presets = project.GetPresetList() or []
-            names = []
-            for p in presets:
-                if isinstance(p, dict):
-                    name = p.get("Name") or p.get("name") or p.get("PresetName") or ""
-                    if name:
-                        names.append(name)
-                elif isinstance(p, str) and p:
-                    names.append(p)
-            if names:
-                return names
-        except Exception:
-            pass
-    # Fallback: collect unique preset values already assigned to clips
-    if media_pool:
-        clips = _all_clips(media_pool.GetRootFolder())
-        found = {str(c.GetClipProperty("Input Sizing Preset") or "").strip() for c in clips}
-        found.discard("")
-        if found:
-            return sorted(found)
-    return ["Project"]
+# def _fetch_input_sizing_presets():  # standby — API investigation pending
+#     ...
 
 # Populated at startup; read-only after that.
-_color_groups         = _fetch_color_groups()       # [ColorGroup, ...]
-_input_sizing_presets = _fetch_input_sizing_presets()
+_color_groups = _fetch_color_groups()  # [ColorGroup, ...]
+# _input_sizing_presets = _fetch_input_sizing_presets()  # standby
 
 # ── Media pool / timeline helpers ─────────────────────────────────────────────
 
@@ -149,10 +127,10 @@ def get_action_values(action):
         return CLIP_COLORS
     if action == "Flags":
         return FLAG_COLORS
-    if action == "Input sizing preset":
-        return _input_sizing_presets
-    if action == "ACES Gamut Compress":
-        return ACES_OPTIONS
+    # if action == "Input sizing preset":  # standby
+    #     return _input_sizing_presets
+    # if action == "ACES Gamut Compress":  # standby
+    #     return ACES_OPTIONS
     return []
 
 # ── Rule execution ────────────────────────────────────────────────────────────
@@ -195,15 +173,15 @@ def execute_rules(rules):
                 if str(clip.GetClipProperty(prop) or "").strip() == cond_val:
                     clip.AddFlag(act_val)
 
-        elif action == "Input sizing preset":
-            for clip in mp_clips:
-                if str(clip.GetClipProperty(prop) or "").strip() == cond_val:
-                    clip.SetClipProperty("Input Sizing Preset", act_val)
+        # elif action == "Input sizing preset":  # standby
+        #     for clip in mp_clips:
+        #         if str(clip.GetClipProperty(prop) or "").strip() == cond_val:
+        #             clip.SetClipProperty("Input Sizing Preset", act_val)
 
-        elif action == "ACES Gamut Compress":
-            for clip in mp_clips:
-                if str(clip.GetClipProperty(prop) or "").strip() == cond_val:
-                    clip.SetClipProperty("ACES GC Preset", act_val)
+        # elif action == "ACES Gamut Compress":  # standby
+        #     for clip in mp_clips:
+        #         if str(clip.GetClipProperty(prop) or "").strip() == cond_val:
+        #             clip.SetClipProperty("ACES GC Preset", act_val)
 
 # ── Settings I/O ──────────────────────────────────────────────────────────────
 
@@ -238,6 +216,7 @@ def _build_window(rules):
         rule_rows.append(
             ui.HGroup({"Weight": 0, "Spacing": 6}, [
                 ui.ComboBox({"ID": f"cond_{rid}",    "Weight": 1}),
+                ui.Label(  {"Text": "is", "Weight": 0}),
                 ui.ComboBox({"ID": f"condval_{rid}", "Weight": 1}),
                 ui.Label(  {"Text": "→", "Weight": 0}),
                 ui.ComboBox({"ID": f"act_{rid}",     "Weight": 1}),
@@ -363,8 +342,13 @@ def _setup_handlers(win, rules):
                     cb.AddItem(v)
                 for rule in rules:
                     if rule["_id"] == r_id:
-                        rule["condition"]       = new_cond
-                        rule["condition_value"] = vals[0] if vals else ""
+                        if new_cond == rule["condition"] and rule["condition_value"] in vals:
+                            # Event fired during init (condition unchanged): restore saved value.
+                            cb.CurrentIndex = vals.index(rule["condition_value"])
+                        else:
+                            # User picked a different condition: reset to first item.
+                            rule["condition"]       = new_cond
+                            rule["condition_value"] = vals[0] if vals else ""
                         break
             return handler
 
@@ -378,8 +362,13 @@ def _setup_handlers(win, rules):
                     cb.AddItem(v)
                 for rule in rules:
                     if rule["_id"] == r_id:
-                        rule["action"]       = new_act
-                        rule["action_value"] = vals[0] if vals else ""
+                        if new_act == rule["action"] and rule["action_value"] in vals:
+                            # Event fired during init (action unchanged): restore saved value.
+                            cb.CurrentIndex = vals.index(rule["action_value"])
+                        else:
+                            # User picked a different action: reset to first item.
+                            rule["action"]       = new_act
+                            rule["action_value"] = vals[0] if vals else ""
                         break
             return handler
 
