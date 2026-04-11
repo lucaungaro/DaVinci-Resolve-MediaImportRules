@@ -28,7 +28,7 @@ if _existing:
     _existing.Raise()
     exit()
 
-# ── Settings file (next to this script in the plugins folder) ─────────────────
+# ── Settings file ─────────────────────────────────────────────────────────────
 
 if sys.platform == "darwin":
     _PLUGINS_DIR = "/Library/Application Support/Blackmagic Design/DaVinci Resolve/Workflow Integration Plugins"
@@ -73,13 +73,66 @@ KEY_ENTER  = 16777221
 
 media_pool = project.GetMediaPool() if project else None
 
-# ── Media pool helpers ────────────────────────────────────────────────────────
+# ── Lists fetched once at plugin launch ───────────────────────────────────────
+
+def _fetch_color_groups():
+    """Return list of ColorGroup objects from the current project."""
+    if not project:
+        return []
+    return list(project.GetColorGroupsList() or [])
+
+def _fetch_input_sizing_presets():
+    """
+    Return available input sizing preset names.
+    project.GetPresetList() returns the project-level presets (which include
+    the Input Scaling presets visible in the right-click menu).
+    Falls back to scanning clip properties if the call returns nothing useful.
+    """
+    if project:
+        try:
+            presets = project.GetPresetList() or []
+            names = []
+            for p in presets:
+                if isinstance(p, dict):
+                    name = p.get("Name") or p.get("name") or p.get("PresetName") or ""
+                    if name:
+                        names.append(name)
+                elif isinstance(p, str) and p:
+                    names.append(p)
+            if names:
+                return names
+        except Exception:
+            pass
+    # Fallback: collect unique preset values already assigned to clips
+    if media_pool:
+        clips = _all_clips(media_pool.GetRootFolder())
+        found = {str(c.GetClipProperty("Input Sizing Preset") or "").strip() for c in clips}
+        found.discard("")
+        if found:
+            return sorted(found)
+    return ["Project"]
+
+# Populated at startup; read-only after that.
+_color_groups         = _fetch_color_groups()       # [ColorGroup, ...]
+_input_sizing_presets = _fetch_input_sizing_presets()
+
+# ── Media pool / timeline helpers ─────────────────────────────────────────────
 
 def _all_clips(folder):
     clips = list(folder.GetClipList() or [])
     for sub in folder.GetSubFolderList() or []:
         clips.extend(_all_clips(sub))
     return clips
+
+def _all_timeline_items():
+    """All video TimelineItems across every track of the current timeline."""
+    timeline = project.GetCurrentTimeline() if project else None
+    if not timeline:
+        return []
+    items = []
+    for i in range(1, timeline.GetTrackCount("video") + 1):
+        items.extend(timeline.GetItemListInTrack("video", i) or [])
+    return items
 
 def get_unique_values(condition):
     prop = CONDITION_PROPS.get(condition)
@@ -89,76 +142,68 @@ def get_unique_values(condition):
     values = {str(c.GetClipProperty(prop)).strip() for c in clips if c.GetClipProperty(prop)}
     return sorted(values)
 
-def _folder_paths(folder, prefix=""):
-    paths = []
-    for sub in folder.GetSubFolderList() or []:
-        name = sub.GetName()
-        path = f"{prefix}/{name}" if prefix else name
-        paths.append(path)
-        paths.extend(_folder_paths(sub, path))
-    return paths
-
 def get_action_values(action):
     if action == "Add to group":
-        if not media_pool:
-            return []
-        return _folder_paths(media_pool.GetRootFolder())
+        return [cg.GetName() for cg in _color_groups]
     if action == "Clip color":
         return CLIP_COLORS
     if action == "Flags":
         return FLAG_COLORS
     if action == "Input sizing preset":
-        try:
-            presets = project.GetInputSizingPresetList()
-            if presets:
-                return list(presets)
-        except Exception:
-            pass
-        return ["Project", "Custom", "None"]
+        return _input_sizing_presets
     if action == "ACES Gamut Compress":
         return ACES_OPTIONS
     return []
 
-def _find_folder(root, path):
-    cur = root
-    for part in (p for p in path.split("/") if p):
-        cur = next(
-            (s for s in (cur.GetSubFolderList() or []) if s.GetName() == part),
-            None,
-        )
-        if not cur:
-            return None
-    return cur
-
-def _apply_action(clip, action, value):
-    if action == "Clip color":
-        clip.SetClipColor(value)
-    elif action == "Flags":
-        clip.AddFlag(value)
-    elif action == "Add to group":
-        target = _find_folder(media_pool.GetRootFolder(), value)
-        if target:
-            media_pool.MoveClips([clip], target)
-    elif action == "Input sizing preset":
-        clip.SetClipProperty("Input Sizing Preset", value)
-    elif action == "ACES Gamut Compress":
-        clip.SetClipProperty("ACES GC Preset", value)
+# ── Rule execution ────────────────────────────────────────────────────────────
 
 def execute_rules(rules):
     active = [r for r in rules if r.get("active", True)]
-    if not active or not media_pool:
+    if not active:
         return
-    all_clips = _all_clips(media_pool.GetRootFolder())
+
+    # Collect clips / timeline items once, reuse across all rules.
+    mp_clips = _all_clips(media_pool.GetRootFolder()) if media_pool else []
+    ti_items = _all_timeline_items()
+
     for rule in active:
         prop     = CONDITION_PROPS.get(rule.get("condition", ""))
         cond_val = rule.get("condition_value", "").strip()
         action   = rule.get("action", "")
         act_val  = rule.get("action_value", "").strip()
+
         if not all([prop, cond_val, action, act_val]):
             continue
-        for clip in all_clips:
-            if str(clip.GetClipProperty(prop) or "").strip() == cond_val:
-                _apply_action(clip, action, act_val)
+
+        if action == "Add to group":
+            # ColorGroup.AssignToColorGroup() lives on TimelineItem.
+            cg = next((g for g in _color_groups if g.GetName() == act_val), None)
+            if not cg:
+                continue
+            for ti in ti_items:
+                mpi = ti.GetMediaPoolItem()
+                if mpi and str(mpi.GetClipProperty(prop) or "").strip() == cond_val:
+                    ti.AssignToColorGroup(cg)
+
+        elif action == "Clip color":
+            for clip in mp_clips:
+                if str(clip.GetClipProperty(prop) or "").strip() == cond_val:
+                    clip.SetClipColor(act_val)
+
+        elif action == "Flags":
+            for clip in mp_clips:
+                if str(clip.GetClipProperty(prop) or "").strip() == cond_val:
+                    clip.AddFlag(act_val)
+
+        elif action == "Input sizing preset":
+            for clip in mp_clips:
+                if str(clip.GetClipProperty(prop) or "").strip() == cond_val:
+                    clip.SetClipProperty("Input Sizing Preset", act_val)
+
+        elif action == "ACES Gamut Compress":
+            for clip in mp_clips:
+                if str(clip.GetClipProperty(prop) or "").strip() == cond_val:
+                    clip.SetClipProperty("ACES GC Preset", act_val)
 
 # ── Settings I/O ──────────────────────────────────────────────────────────────
 
@@ -172,14 +217,11 @@ def load_settings():
         return []
 
 def save_settings(rules):
-    data = [
-        {k: v for k, v in r.items() if k != "_id"}
-        for r in rules
-    ]
+    data = [{k: v for k, v in r.items() if k != "_id"} for r in rules]
     with open(SETTINGS_FILE, "w", encoding="utf-8") as f:
         json.dump({"rules": data}, f, indent=2, ensure_ascii=False)
 
-# ── UI helpers ────────────────────────────────────────────────────────────────
+# ── UI ────────────────────────────────────────────────────────────────────────
 
 _id_counter = 0
 
@@ -190,7 +232,6 @@ def _next_id():
 
 
 def _build_window(rules):
-    """Create a fresh window for the current rules list."""
     rule_rows = []
     for r in rules:
         rid = r["_id"]
@@ -222,15 +263,12 @@ def _build_window(rules):
         },
         [
             ui.VGroup({"Spacing": 8, "Margin": 10}, [
-                # ── Toolbar ────────────────────────────────────────────────
                 ui.HGroup({"Weight": 0, "Spacing": 6}, [
                     ui.Button({"ID": "btn_add", "Text": "+ Add Rule", "Weight": 0}),
                     ui.HGap(),
                 ]),
-                # ── Rule rows ──────────────────────────────────────────────
                 ui.VGroup({"Spacing": 4}, rule_rows),
                 ui.VGap(),
-                # ── Bottom bar ─────────────────────────────────────────────
                 ui.HGroup({"Weight": 0, "Spacing": 6}, [
                     ui.Button({"ID": "btn_exit",    "Text": "Save and Exit",    "Weight": 0}),
                     ui.Button({"ID": "btn_execute", "Text": "Save and Execute", "Weight": 0}),
@@ -246,14 +284,12 @@ def _populate_combos(win, rules):
     for r in rules:
         rid = r["_id"]
 
-        # Condition
         cb = items[f"cond_{rid}"]
         cb.Clear()
         for c in CONDITIONS:
             cb.AddItem(c)
         cb.CurrentIndex = CONDITIONS.index(r["condition"]) if r["condition"] in CONDITIONS else 0
 
-        # Condition value
         cond_vals = get_unique_values(r["condition"])
         cb = items[f"condval_{rid}"]
         cb.Clear()
@@ -262,14 +298,12 @@ def _populate_combos(win, rules):
         if r["condition_value"] in cond_vals:
             cb.CurrentIndex = cond_vals.index(r["condition_value"])
 
-        # Action
         cb = items[f"act_{rid}"]
         cb.Clear()
         for a in ACTIONS:
             cb.AddItem(a)
         cb.CurrentIndex = ACTIONS.index(r["action"]) if r["action"] in ACTIONS else 0
 
-        # Action value
         act_vals = get_action_values(r["action"])
         cb = items[f"actval_{rid}"]
         cb.Clear()
@@ -280,7 +314,6 @@ def _populate_combos(win, rules):
 
 
 def _collect_rules(win, rules):
-    """Read current widget state back into the rules list."""
     items = win.GetItems()
     for r in rules:
         rid = r["_id"]
@@ -317,11 +350,9 @@ def _setup_handlers(win, rules):
     for r in rules:
         rid = r["_id"]
 
-        # Remove button
         def _make_remove(r_id):
             return lambda ev: signal(f"remove_{r_id}")
 
-        # Condition changed → repopulate condition-value combo in place
         def _make_cond_changed(r_id):
             def handler(ev):
                 new_cond = items[f"cond_{r_id}"].CurrentText
@@ -337,7 +368,6 @@ def _setup_handlers(win, rules):
                         break
             return handler
 
-        # Action changed → repopulate action-value combo in place
         def _make_act_changed(r_id):
             def handler(ev):
                 new_act = items[f"act_{r_id}"].CurrentText
@@ -353,9 +383,9 @@ def _setup_handlers(win, rules):
                         break
             return handler
 
-        win.On[f"remove_{rid}"].Clicked              = _make_remove(rid)
-        win.On[f"cond_{rid}"].CurrentIndexChanged    = _make_cond_changed(rid)
-        win.On[f"act_{rid}"].CurrentIndexChanged     = _make_act_changed(rid)
+        win.On[f"remove_{rid}"].Clicked           = _make_remove(rid)
+        win.On[f"cond_{rid}"].CurrentIndexChanged = _make_cond_changed(rid)
+        win.On[f"act_{rid}"].CurrentIndexChanged  = _make_act_changed(rid)
 
 
 # ── Main loop ─────────────────────────────────────────────────────────────────
@@ -364,7 +394,6 @@ _pending_action = None
 _win            = None
 
 def _run_window(rules):
-    """Build, show, and run the window; return the pending action string."""
     global _win, _pending_action
     _pending_action = None
     if _win:
@@ -377,7 +406,6 @@ def _run_window(rules):
     return _pending_action
 
 
-# Seed rules from saved JSON, assigning internal _id to each
 rules = []
 for _rd in load_settings():
     _rd["_id"] = _next_id()
