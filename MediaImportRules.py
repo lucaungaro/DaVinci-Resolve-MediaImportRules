@@ -3,55 +3,49 @@
 MediaImportRules.py
 DaVinci Resolve Workflow Integration Plugin
 
-Rules-based media automation: match clips by metadata conditions
-and apply bulk actions (clip colour, flags, group, sizing preset, ACES GC).
+Defines metadata-based rules that apply bulk actions to matching clips.
+Place in the Workflow Integration Plugins folder; launch via
+Workspace > Workflow Integrations > MediaImportRules.
 
-Install location (macOS):
-  ~/Library/Application Support/Blackmagic Design/DaVinci Resolve/
-  Fusion/Scripts/Workflow Integration/MediaImportRules.py
-
-Usage:
-  Workspace > Scripts > Workflow Integration > MediaImportRules
+On launch, Resolve automatically provides `resolve` and `project` globals.
 """
 
+import json
 import os
 import sys
-import json
-import platform
 
-# ─── Constants ────────────────────────────────────────────────────────────────
+# ── UI manager (Resolve / Fusion built-in) ────────────────────────────────────
 
-# DaVinci Resolve's scripting host does not set __file__; fall back to the
-# standard Workflow Integration Plugins folder for the current platform.
-try:
-    SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
-except NameError:
-    if sys.platform == "darwin":
-        SCRIPT_DIR = os.path.expanduser(
-            "~/Library/Application Support/Blackmagic Design/"
-            "DaVinci Resolve/Workflow Integration Plugins"
-        )
-    elif sys.platform == "win32":
-        SCRIPT_DIR = os.path.join(
-            os.environ.get("APPDATA", ""),
-            r"Blackmagic Design\DaVinci Resolve\Support\Workflow Integration Plugins",
-        )
-    else:
-        SCRIPT_DIR = os.path.expanduser(
-            "~/.local/share/DaVinciResolve/Workflow Integration Plugins"
-        )
+ui         = fusion.UIManager
+dispatcher = bmd.UIDispatcher(ui)
 
-SETTINGS_FILE = os.path.join(SCRIPT_DIR, "MediaImportRules.json")
+WIN_ID = "com.blackmagicdesign.resolve.MediaImportRules"
 
-CONDITIONS = [
-    "Resolution",
-    "Shot Frame Rate",
-    "Video Codec",
-    "Camera #",
-    "Camera Type",
-]
+# Single-instance guard
+_existing = ui.FindWindow(WIN_ID)
+if _existing:
+    _existing.Show()
+    _existing.Raise()
+    exit()
 
-# Maps user-facing condition names → DaVinci clip property keys
+# ── Settings file (next to this script in the plugins folder) ─────────────────
+
+if sys.platform == "darwin":
+    _PLUGINS_DIR = "/Library/Application Support/Blackmagic Design/DaVinci Resolve/Workflow Integration Plugins"
+elif sys.platform == "win32":
+    _PLUGINS_DIR = os.path.join(
+        os.environ.get("PROGRAMDATA", ""),
+        r"Blackmagic Design\DaVinci Resolve\Support\Workflow Integration Plugins",
+    )
+else:
+    _PLUGINS_DIR = os.path.expanduser("~/.local/share/DaVinciResolve/Workflow Integration Plugins")
+
+SETTINGS_FILE = os.path.join(_PLUGINS_DIR, "MediaImportRules.json")
+
+# ── Domain constants ──────────────────────────────────────────────────────────
+
+CONDITIONS = ["Resolution", "Shot Frame Rate", "Video Codec", "Camera #", "Camera Type"]
+
 CONDITION_PROPS = {
     "Resolution":      "Resolution",
     "Shot Frame Rate": "FPS",
@@ -60,93 +54,42 @@ CONDITION_PROPS = {
     "Camera Type":     "Camera Type",
 }
 
-ACTIONS = [
-    "Add to group",
-    "Clip color",
-    "Flags",
-    "Input sizing preset",
-    "ACES Gamut Compress",
-]
+ACTIONS = ["Add to group", "Clip color", "Flags", "Input sizing preset", "ACES Gamut Compress"]
 
-# All named colours supported by SetClipColor()
 CLIP_COLORS = [
     "Orange", "Apricot", "Yellow", "Lime", "Olive", "Green",
     "Teal", "Navy", "Blue", "Purple", "Violet", "Pink",
     "Tan", "Beige", "Brown", "Chocolate",
 ]
-
-# Named colours supported by AddFlag()
-FLAG_COLORS = [
-    "Red", "Blue", "Green", "Yellow", "Cyan", "Magenta",
-]
-
+FLAG_COLORS  = ["Red", "Blue", "Green", "Yellow", "Cyan", "Magenta"]
 ACES_OPTIONS = ["None", "Standard - LMT"]
 
-# ─── Dark-theme palette ───────────────────────────────────────────────────────
+KEY_ESCAPE = 16777216
+KEY_RETURN = 16777220
+KEY_ENTER  = 16777221
 
-BG         = "#1e1e1e"
-BG_ROW     = "#272727"
-FG         = "#e0e0e0"
-FG_DIM     = "#757575"
-ACCENT     = "#4a90d9"
-ACCENT_HOV = "#357abd"
-ON_COL     = "#43a047"
-OFF_COL    = "#616161"
-REMOVE_COL = "#c62828"
-BTN_BG     = "#333333"
-BTN_FG     = "#e0e0e0"
-SEP_COL    = "#3a3a3a"
+# ── Resolve context ───────────────────────────────────────────────────────────
+# `resolve` and `project` are injected by Resolve at startup.
 
-# ─── DaVinci Resolve API helpers ──────────────────────────────────────────────
+media_pool = project.GetMediaPool() if project else None
 
-def _get_resolve():
-    """Return the Resolve application object, however the env exposes it."""
-    try:
-        return bmd.scriptapp("Resolve")          # inside Resolve env
-    except NameError:
-        pass
-    try:
-        import DaVinciResolveScript as dvr       # external / standalone
-        return dvr.scriptapp("Resolve")
-    except Exception:
-        return None
-
-
-def get_resolve_context():
-    """Return (resolve, project, media_pool) – any may be None on failure."""
-    resolve = _get_resolve()
-    if not resolve:
-        return None, None, None
-    pm          = resolve.GetProjectManager()
-    project     = pm.GetCurrentProject()     if pm      else None
-    media_pool  = project.GetMediaPool()     if project else None
-    return resolve, project, media_pool
-
+# ── Media pool helpers ────────────────────────────────────────────────────────
 
 def _all_clips(folder):
-    """Recursively collect every MediaPoolItem under *folder*."""
     clips = list(folder.GetClipList() or [])
     for sub in folder.GetSubFolderList() or []:
         clips.extend(_all_clips(sub))
     return clips
 
-
-def get_unique_values(condition, media_pool):
-    """Return sorted, de-duplicated metadata values for *condition* across all clips."""
+def get_unique_values(condition):
     prop = CONDITION_PROPS.get(condition)
     if not prop or not media_pool:
         return []
     clips  = _all_clips(media_pool.GetRootFolder())
-    values = set()
-    for clip in clips:
-        v = clip.GetClipProperty(prop)
-        if v:
-            values.add(str(v).strip())
+    values = {str(c.GetClipProperty(prop)).strip() for c in clips if c.GetClipProperty(prop)}
     return sorted(values)
 
-
 def _folder_paths(folder, prefix=""):
-    """Flat list of all bin paths under *folder* (e.g. 'Dailies/Day 01')."""
     paths = []
     for sub in folder.GetSubFolderList() or []:
         name = sub.GetName()
@@ -155,23 +98,16 @@ def _folder_paths(folder, prefix=""):
         paths.extend(_folder_paths(sub, path))
     return paths
 
-
-def get_action_values(action, project, media_pool):
-    """Return available option strings for *action*."""
+def get_action_values(action):
     if action == "Add to group":
         if not media_pool:
-            return ["(no project open)"]
-        paths = _folder_paths(media_pool.GetRootFolder())
-        return paths or ["(no bins found)"]
-
+            return []
+        return _folder_paths(media_pool.GetRootFolder())
     if action == "Clip color":
         return CLIP_COLORS
-
     if action == "Flags":
         return FLAG_COLORS
-
     if action == "Input sizing preset":
-        # Attempt API call first (available in newer Resolve versions)
         try:
             presets = project.GetInputSizingPresetList()
             if presets:
@@ -179,487 +115,301 @@ def get_action_values(action, project, media_pool):
         except Exception:
             pass
         return ["Project", "Custom", "None"]
-
     if action == "ACES Gamut Compress":
         return ACES_OPTIONS
-
-    return ["(select an action first)"]
-
+    return []
 
 def _find_folder(root, path):
-    """Navigate to a MediaPool folder by slash-separated path string."""
-    parts = [p for p in path.split("/") if p]
-    cur   = root
-    for part in parts:
-        found = None
-        for sub in cur.GetSubFolderList() or []:
-            if sub.GetName() == part:
-                found = sub
-                break
-        if not found:
+    cur = root
+    for part in (p for p in path.split("/") if p):
+        cur = next(
+            (s for s in (cur.GetSubFolderList() or []) if s.GetName() == part),
+            None,
+        )
+        if not cur:
             return None
-        cur = found
     return cur
 
+def _apply_action(clip, action, value):
+    if action == "Clip color":
+        clip.SetClipColor(value)
+    elif action == "Flags":
+        clip.AddFlag(value)
+    elif action == "Add to group":
+        target = _find_folder(media_pool.GetRootFolder(), value)
+        if target:
+            media_pool.MoveClips([clip], target)
+    elif action == "Input sizing preset":
+        clip.SetClipProperty("Input Sizing Preset", value)
+    elif action == "ACES Gamut Compress":
+        clip.SetClipProperty("ACES GC Preset", value)
 
-def _apply_action(clip, action, value, project, media_pool):
-    """Apply a single *action* / *value* pair to *clip*."""
-    try:
-        if action == "Clip color":
-            clip.SetClipColor(value)
-
-        elif action == "Flags":
-            clip.AddFlag(value)
-
-        elif action == "Add to group":
-            target = _find_folder(media_pool.GetRootFolder(), value)
-            if target:
-                media_pool.MoveClips([clip], target)
-
-        elif action == "Input sizing preset":
-            clip.SetClipProperty("Input Sizing Preset", value)
-
-        elif action == "ACES Gamut Compress":
-            clip.SetClipProperty("ACES GC Preset", value)
-    except Exception as exc:
-        print(f"[MediaImportRules] Warning: could not apply '{action}' → {exc}")
-
-
-def execute_rules(rules, project, media_pool):
-    """Run every active rule against all clips in the current project."""
+def execute_rules(rules):
     active = [r for r in rules if r.get("active", True)]
     if not active or not media_pool:
         return
-
     all_clips = _all_clips(media_pool.GetRootFolder())
-
     for rule in active:
-        cond      = rule.get("condition", "")
-        cond_val  = rule.get("condition_value", "").strip()
-        action    = rule.get("action", "")
-        act_val   = rule.get("action_value", "").strip()
-
-        if not all([cond, cond_val, action, act_val]):
+        prop     = CONDITION_PROPS.get(rule.get("condition", ""))
+        cond_val = rule.get("condition_value", "").strip()
+        action   = rule.get("action", "")
+        act_val  = rule.get("action_value", "").strip()
+        if not all([prop, cond_val, action, act_val]):
             continue
-
-        prop = CONDITION_PROPS.get(cond)
-        if not prop:
-            continue
-
         for clip in all_clips:
-            clip_val = str(clip.GetClipProperty(prop) or "").strip()
-            if clip_val == cond_val:
-                _apply_action(clip, action, act_val, project, media_pool)
+            if str(clip.GetClipProperty(prop) or "").strip() == cond_val:
+                _apply_action(clip, action, act_val)
 
-
-# ─── Settings I/O ─────────────────────────────────────────────────────────────
+# ── Settings I/O ──────────────────────────────────────────────────────────────
 
 def load_settings():
     if not os.path.exists(SETTINGS_FILE):
         return []
     try:
-        with open(SETTINGS_FILE, "r", encoding="utf-8") as fh:
-            return json.load(fh).get("rules", [])
+        with open(SETTINGS_FILE, "r", encoding="utf-8") as f:
+            return json.load(f).get("rules", [])
     except Exception:
         return []
 
-
 def save_settings(rules):
-    with open(SETTINGS_FILE, "w", encoding="utf-8") as fh:
-        json.dump({"rules": rules}, fh, indent=2, ensure_ascii=False)
+    data = [
+        {k: v for k, v in r.items() if k != "_id"}
+        for r in rules
+    ]
+    with open(SETTINGS_FILE, "w", encoding="utf-8") as f:
+        json.dump({"rules": data}, f, indent=2, ensure_ascii=False)
+
+# ── UI helpers ────────────────────────────────────────────────────────────────
+
+_id_counter = 0
+
+def _next_id():
+    global _id_counter
+    _id_counter += 1
+    return _id_counter
 
 
-# ─── Tkinter UI ───────────────────────────────────────────────────────────────
-
-try:
-    import tkinter as tk
-    from tkinter import ttk
-    HAS_TK = True
-except ImportError:
-    HAS_TK = False
-
-
-class ToggleSwitch(tk.Canvas):
-    """Pill-shaped toggle switch (ON = green, OFF = grey)."""
-
-    W = 52
-    H = 26
-
-    def __init__(self, parent, active=True, **kwargs):
-        super().__init__(
-            parent,
-            width=self.W, height=self.H,
-            bg=BG_ROW, highlightthickness=0,
-            **kwargs,
-        )
-        self._active = bool(active)
-        self._redraw()
-        self.bind("<Button-1>", self._on_click)
-        self.configure(cursor="hand2")
-
-    def _redraw(self):
-        self.delete("all")
-        colour = ON_COL if self._active else OFF_COL
-        r   = self.H // 2
-        pad = 3
-        # Track
-        self.create_oval(0, 0, self.H, self.H, fill=colour, outline="")
-        self.create_oval(self.W - self.H, 0, self.W, self.H, fill=colour, outline="")
-        self.create_rectangle(r, 0, self.W - r, self.H, fill=colour, outline="")
-        # Thumb
-        cx = (self.W - r) if self._active else r
-        self.create_oval(
-            cx - r + pad, pad,
-            cx + r - pad, self.H - pad,
-            fill="white", outline="",
+def _build_window(rules):
+    """Create a fresh window for the current rules list."""
+    rule_rows = []
+    for r in rules:
+        rid = r["_id"]
+        rule_rows.append(
+            ui.HGroup({"Weight": 0, "Spacing": 6}, [
+                ui.ComboBox({"ID": f"cond_{rid}",    "Weight": 1}),
+                ui.ComboBox({"ID": f"condval_{rid}", "Weight": 1}),
+                ui.Label(  {"Text": "→", "Weight": 0}),
+                ui.ComboBox({"ID": f"act_{rid}",     "Weight": 1}),
+                ui.ComboBox({"ID": f"actval_{rid}",  "Weight": 1}),
+                ui.CheckBox({"ID": f"active_{rid}", "Text": "Active",
+                             "Checked": r.get("active", True), "Weight": 0}),
+                ui.Button(  {"ID": f"remove_{rid}", "Text": "✕", "Weight": 0}),
+            ])
         )
 
-    def _on_click(self, _event=None):
-        self._active = not self._active
-        self._redraw()
+    if not rule_rows:
+        rule_rows = [
+            ui.Label({"Text": 'No rules defined. Click "+ Add Rule" to begin.',
+                      "Alignment": {"AlignHCenter": True}, "Weight": 0}),
+        ]
 
-    def get(self):
-        return self._active
-
-    def set(self, value):
-        self._active = bool(value)
-        self._redraw()
-
-
-class RuleRow:
-    """One horizontal rule row: condition → action + toggle + remove."""
-
-    def __init__(self, parent, rule_data, plugin):
-        self.plugin = plugin
-
-        self.frame = tk.Frame(parent, bg=BG_ROW, padx=6, pady=5)
-
-        # ── Condition selector ────────────────────────────────────────────────
-        self.cond_var   = tk.StringVar()
-        self.cond_combo = ttk.Combobox(
-            self.frame, textvariable=self.cond_var,
-            values=CONDITIONS, state="readonly", width=17,
-        )
-        self.cond_combo.pack(side="left", padx=(0, 4))
-
-        # ── Condition value selector ──────────────────────────────────────────
-        self.cond_val_var   = tk.StringVar()
-        self.cond_val_combo = ttk.Combobox(
-            self.frame, textvariable=self.cond_val_var,
-            state="readonly", width=17,
-        )
-        self.cond_val_combo.pack(side="left", padx=(0, 8))
-
-        # ── Arrow ─────────────────────────────────────────────────────────────
-        tk.Label(
-            self.frame, text="→", bg=BG_ROW, fg=FG_DIM,
-            font=("", 13),
-        ).pack(side="left", padx=4)
-
-        # ── Action selector ───────────────────────────────────────────────────
-        self.act_var   = tk.StringVar()
-        self.act_combo = ttk.Combobox(
-            self.frame, textvariable=self.act_var,
-            values=ACTIONS, state="readonly", width=17,
-        )
-        self.act_combo.pack(side="left", padx=(8, 4))
-
-        # ── Action value selector ─────────────────────────────────────────────
-        self.act_val_var   = tk.StringVar()
-        self.act_val_combo = ttk.Combobox(
-            self.frame, textvariable=self.act_val_var,
-            state="readonly", width=17,
-        )
-        self.act_val_combo.pack(side="left", padx=(0, 12))
-
-        # ── Toggle switch ─────────────────────────────────────────────────────
-        self.toggle = ToggleSwitch(
-            self.frame, active=rule_data.get("active", True),
-        )
-        self.toggle.pack(side="left", padx=4)
-
-        # ── Remove button ─────────────────────────────────────────────────────
-        remove_btn = tk.Button(
-            self.frame, text="🗑",
-            command=lambda: self.plugin.remove_rule(self),
-            bg=REMOVE_COL, fg="white", activebackground="#8b0000",
-            activeforeground="white",
-            relief="flat", bd=0, padx=7, pady=3,
-            font=("", 13), cursor="hand2",
-        )
-        remove_btn.pack(side="left", padx=(8, 0))
-
-        # ── Initialise values (traces added AFTER to avoid double-populate) ───
-        cond = rule_data.get("condition", CONDITIONS[0])
-        self.cond_var.set(cond if cond in CONDITIONS else CONDITIONS[0])
-
-        act = rule_data.get("action", ACTIONS[0])
-        self.act_var.set(act if act in ACTIONS else ACTIONS[0])
-
-        self._populate_cond_vals(rule_data.get("condition_value", ""))
-        self._populate_act_vals(rule_data.get("action_value",    ""))
-
-        # Register traces now so user-driven changes update the value dropdowns
-        self.cond_var.trace_add("write", self._on_cond_change)
-        self.act_var.trace_add( "write", self._on_act_change)
-
-    # ── Dropdown population ───────────────────────────────────────────────────
-
-    def _populate_cond_vals(self, saved=""):
-        cond = self.cond_var.get()
-        vals = get_unique_values(cond, self.plugin.media_pool)
-        self.cond_val_combo["values"] = vals
-        if saved and saved in vals:
-            self.cond_val_var.set(saved)
-        elif vals:
-            self.cond_val_var.set(vals[0])
-        else:
-            self.cond_val_var.set("")
-
-    def _populate_act_vals(self, saved=""):
-        act  = self.act_var.get()
-        vals = get_action_values(act, self.plugin.project, self.plugin.media_pool)
-        self.act_val_combo["values"] = vals
-        if saved and saved in vals:
-            self.act_val_var.set(saved)
-        elif vals:
-            self.act_val_var.set(vals[0])
-        else:
-            self.act_val_var.set("")
-
-    # ── Trace callbacks ───────────────────────────────────────────────────────
-
-    def _on_cond_change(self, *_):
-        self._populate_cond_vals()
-
-    def _on_act_change(self, *_):
-        self._populate_act_vals()
-
-    # ── Data accessor ─────────────────────────────────────────────────────────
-
-    def get_data(self):
-        return {
-            "condition":       self.cond_var.get(),
-            "condition_value": self.cond_val_var.get(),
-            "action":          self.act_var.get(),
-            "action_value":    self.act_val_var.get(),
-            "active":          self.toggle.get(),
-        }
+    return dispatcher.AddWindow(
+        {
+            "ID":          WIN_ID,
+            "WindowTitle": "Media Import Rules",
+            "Geometry":    [100, 100, 960, max(148, 108 + len(rules) * 46)],
+            "Events":      {"KeyPress": True},
+        },
+        [
+            ui.VGroup({"Spacing": 8, "Margin": 10}, [
+                # ── Toolbar ────────────────────────────────────────────────
+                ui.HGroup({"Weight": 0, "Spacing": 6}, [
+                    ui.Button({"ID": "btn_add", "Text": "+ Add Rule", "Weight": 0}),
+                    ui.HGap(),
+                ]),
+                # ── Rule rows ──────────────────────────────────────────────
+                ui.VGroup({"Spacing": 4}, rule_rows),
+                ui.VGap(),
+                # ── Bottom bar ─────────────────────────────────────────────
+                ui.HGroup({"Weight": 0, "Spacing": 6}, [
+                    ui.Button({"ID": "btn_exit",    "Text": "Save and Exit",    "Weight": 0}),
+                    ui.Button({"ID": "btn_execute", "Text": "Save and Execute", "Weight": 0}),
+                    ui.HGap(),
+                ]),
+            ]),
+        ],
+    )
 
 
-class MediaImportRulesApp:
-    """Main application window."""
+def _populate_combos(win, rules):
+    items = win.GetItems()
+    for r in rules:
+        rid = r["_id"]
 
-    def __init__(self, project, media_pool):
-        self.project    = project
-        self.media_pool = media_pool
-        self.rows: list = []
+        # Condition
+        cb = items[f"cond_{rid}"]
+        cb.Clear()
+        for c in CONDITIONS:
+            cb.AddItem(c)
+        cb.CurrentIndex = CONDITIONS.index(r["condition"]) if r["condition"] in CONDITIONS else 0
 
-        self.root = tk.Tk()
-        self.root.title("Media Import Rules")
-        self.root.configure(bg=BG)
-        self.root.resizable(True, True)
-        self.root.minsize(980, 160)
+        # Condition value
+        cond_vals = get_unique_values(r["condition"])
+        cb = items[f"condval_{rid}"]
+        cb.Clear()
+        for v in cond_vals:
+            cb.AddItem(v)
+        if r["condition_value"] in cond_vals:
+            cb.CurrentIndex = cond_vals.index(r["condition_value"])
 
-        self._apply_style()
-        self._build_ui()
+        # Action
+        cb = items[f"act_{rid}"]
+        cb.Clear()
+        for a in ACTIONS:
+            cb.AddItem(a)
+        cb.CurrentIndex = ACTIONS.index(r["action"]) if r["action"] in ACTIONS else 0
 
-        # Load and render saved rules
-        for rule_data in load_settings():
-            self._add_row(rule_data)
+        # Action value
+        act_vals = get_action_values(r["action"])
+        cb = items[f"actval_{rid}"]
+        cb.Clear()
+        for v in act_vals:
+            cb.AddItem(v)
+        if r["action_value"] in act_vals:
+            cb.CurrentIndex = act_vals.index(r["action_value"])
 
-        self._sync_scroll_region()
 
-        # Keyboard shortcuts: Esc = Save & Exit, Return = Save & Execute
-        self.root.bind("<Escape>", lambda _e: self.save_and_exit())
-        self.root.bind("<Return>", lambda _e: self.save_and_execute())
+def _collect_rules(win, rules):
+    """Read current widget state back into the rules list."""
+    items = win.GetItems()
+    for r in rules:
+        rid = r["_id"]
+        r["condition"]       = items[f"cond_{rid}"].CurrentText
+        r["condition_value"] = items[f"condval_{rid}"].CurrentText
+        r["action"]          = items[f"act_{rid}"].CurrentText
+        r["action_value"]    = items[f"actval_{rid}"].CurrentText
+        r["active"]          = items[f"active_{rid}"].Checked
 
-    # ── Theme ─────────────────────────────────────────────────────────────────
 
-    def _apply_style(self):
-        style = ttk.Style(self.root)
-        style.theme_use("default")
-        style.configure(
-            "TCombobox",
-            fieldbackground="#2e2e2e",
-            background="#2e2e2e",
-            foreground=FG,
-            selectbackground=ACCENT,
-            selectforeground="white",
-            arrowcolor=FG,
-            relief="flat",
-            borderwidth=1,
-        )
-        style.map(
-            "TCombobox",
-            fieldbackground=[("readonly", "#2e2e2e")],
-            foreground=[("readonly", FG)],
-            background=[("readonly", "#2e2e2e")],
-        )
-        # Style the drop-down list
-        self.root.option_add("*TCombobox*Listbox.background",   "#2e2e2e")
-        self.root.option_add("*TCombobox*Listbox.foreground",   FG)
-        self.root.option_add("*TCombobox*Listbox.selectBackground", ACCENT)
-        self.root.option_add("*TCombobox*Listbox.selectForeground", "white")
+def _setup_handlers(win, rules):
+    items = win.GetItems()
 
-    # ── Layout ────────────────────────────────────────────────────────────────
+    def signal(act):
+        _collect_rules(win, rules)
+        global _pending_action
+        _pending_action = act
+        dispatcher.ExitLoop()
 
-    def _build_ui(self):
-        # ── Top toolbar ───────────────────────────────────────────────────────
-        toolbar = tk.Frame(self.root, bg=BG, pady=8)
-        toolbar.pack(fill="x", padx=12, side="top")
+    win.On[WIN_ID].Close          = lambda ev: signal("close")
+    win.On["btn_add"].Clicked     = lambda ev: signal("add")
+    win.On["btn_exit"].Clicked    = lambda ev: signal("exit")
+    win.On["btn_execute"].Clicked = lambda ev: signal("execute")
 
-        tk.Button(
-            toolbar, text="＋  Add Rule",
-            command=self.add_rule,
-            bg=ACCENT, fg="white",
-            activebackground=ACCENT_HOV, activeforeground="white",
-            relief="flat", bd=0, padx=14, pady=6,
-            font=("", 11, "bold"), cursor="hand2",
-        ).pack(side="left")
+    def on_key(ev):
+        k = ev.get("Key", 0)
+        if k == KEY_ESCAPE:
+            signal("exit")
+        elif k in (KEY_RETURN, KEY_ENTER):
+            signal("execute")
 
-        # ── Scrollable rules container ─────────────────────────────────────────
-        mid = tk.Frame(self.root, bg=BG)
-        mid.pack(fill="both", expand=True, padx=12, pady=(0, 4))
+    win.On[WIN_ID].KeyPress = on_key
 
-        self.canvas = tk.Canvas(mid, bg=BG, highlightthickness=0)
-        vscroll     = tk.Scrollbar(mid, orient="vertical",
-                                   command=self.canvas.yview,
-                                   bg=BTN_BG, troughcolor=BG)
+    for r in rules:
+        rid = r["_id"]
 
-        self.rules_frame  = tk.Frame(self.canvas, bg=BG)
-        self._cw_id       = self.canvas.create_window(
-            (0, 0), window=self.rules_frame, anchor="nw",
-        )
+        # Remove button
+        def _make_remove(r_id):
+            return lambda ev: signal(f"remove_{r_id}")
 
-        self.canvas.configure(yscrollcommand=vscroll.set)
-        vscroll.pack(side="right", fill="y")
-        self.canvas.pack(side="left", fill="both", expand=True)
+        # Condition changed → repopulate condition-value combo in place
+        def _make_cond_changed(r_id):
+            def handler(ev):
+                new_cond = items[f"cond_{r_id}"].CurrentText
+                cb = items[f"condval_{r_id}"]
+                cb.Clear()
+                vals = get_unique_values(new_cond)
+                for v in vals:
+                    cb.AddItem(v)
+                for rule in rules:
+                    if rule["_id"] == r_id:
+                        rule["condition"]       = new_cond
+                        rule["condition_value"] = vals[0] if vals else ""
+                        break
+            return handler
 
-        self.rules_frame.bind("<Configure>", self._on_inner_configure)
-        self.canvas.bind(      "<Configure>", self._on_canvas_configure)
+        # Action changed → repopulate action-value combo in place
+        def _make_act_changed(r_id):
+            def handler(ev):
+                new_act = items[f"act_{r_id}"].CurrentText
+                cb = items[f"actval_{r_id}"]
+                cb.Clear()
+                vals = get_action_values(new_act)
+                for v in vals:
+                    cb.AddItem(v)
+                for rule in rules:
+                    if rule["_id"] == r_id:
+                        rule["action"]       = new_act
+                        rule["action_value"] = vals[0] if vals else ""
+                        break
+            return handler
 
-        # Mouse-wheel scrolling (cross-platform)
-        self.canvas.bind_all("<MouseWheel>", self._on_mousewheel)
-        self.canvas.bind_all("<Button-4>",   lambda _e: self.canvas.yview_scroll(-1, "units"))
-        self.canvas.bind_all("<Button-5>",   lambda _e: self.canvas.yview_scroll( 1, "units"))
+        win.On[f"remove_{rid}"].Clicked              = _make_remove(rid)
+        win.On[f"cond_{rid}"].CurrentIndexChanged    = _make_cond_changed(rid)
+        win.On[f"act_{rid}"].CurrentIndexChanged     = _make_act_changed(rid)
 
-        # ── Placeholder label ─────────────────────────────────────────────────
-        self.placeholder = tk.Label(
-            self.rules_frame,
-            text='No rules defined. Click "＋ Add Rule" to get started.',
-            bg=BG, fg=FG_DIM, font=("", 11), pady=18,
-        )
-        self.placeholder.pack()
 
-        # ── Separator ──────────────────────────────────────────────────────────
-        tk.Frame(self.root, bg=SEP_COL, height=1).pack(fill="x", padx=12)
+# ── Main loop ─────────────────────────────────────────────────────────────────
 
-        # ── Bottom action bar ──────────────────────────────────────────────────
-        bottom = tk.Frame(self.root, bg=BG, pady=10)
-        bottom.pack(fill="x", padx=12, side="bottom")
+_pending_action = None
+_win            = None
 
-        tk.Button(
-            bottom, text="Save and Exit",
-            command=self.save_and_exit,
-            bg=BTN_BG, fg=BTN_FG,
-            activebackground="#444", activeforeground=FG,
-            relief="flat", bd=0, padx=16, pady=7,
-            font=("", 10), cursor="hand2",
-        ).pack(side="left", padx=(0, 8))
+def _run_window(rules):
+    """Build, show, and run the window; return the pending action string."""
+    global _win, _pending_action
+    _pending_action = None
+    if _win:
+        _win.Hide()
+    _win = _build_window(rules)
+    _populate_combos(_win, rules)
+    _setup_handlers(_win, rules)
+    _win.Show()
+    dispatcher.RunLoop()
+    return _pending_action
 
-        tk.Button(
-            bottom, text="Save and Execute",
-            command=self.save_and_execute,
-            bg="#2e7d32", fg="white",
-            activebackground="#1b5e20", activeforeground="white",
-            relief="flat", bd=0, padx=16, pady=7,
-            font=("", 10, "bold"), cursor="hand2",
-        ).pack(side="left")
 
-    # ── Canvas helpers ────────────────────────────────────────────────────────
+# Seed rules from saved JSON, assigning internal _id to each
+rules = []
+for _rd in load_settings():
+    _rd["_id"] = _next_id()
+    rules.append(_rd)
 
-    def _on_inner_configure(self, _event):
-        self.canvas.configure(scrollregion=self.canvas.bbox("all"))
+while True:
+    action = _run_window(rules)
 
-    def _on_canvas_configure(self, event):
-        self.canvas.itemconfig(self._cw_id, width=event.width)
+    if action in ("exit", "close", None):
+        if action == "exit":
+            save_settings(rules)
+        break
 
-    def _on_mousewheel(self, event):
-        if sys.platform == "darwin":
-            self.canvas.yview_scroll(-event.delta, "units")
-        else:
-            self.canvas.yview_scroll(int(-1 * event.delta / 120), "units")
+    elif action == "execute":
+        save_settings(rules)
+        execute_rules(rules)
+        break
 
-    def _sync_scroll_region(self):
-        self.root.update_idletasks()
-        self.canvas.configure(scrollregion=self.canvas.bbox("all"))
-        n = len(self.rows)
-        h = min(max(180, 130 + n * 48), 720)
-        self.root.geometry(f"980x{h}")
-
-    # ── Rule management ───────────────────────────────────────────────────────
-
-    def add_rule(self):
-        self._add_row({
-            "condition":       CONDITIONS[0],
-            "condition_value": "",
-            "action":          ACTIONS[0],
-            "action_value":    "",
+    elif action == "add":
+        cond      = CONDITIONS[0]
+        act       = ACTIONS[0]
+        cond_vals = get_unique_values(cond)
+        act_vals  = get_action_values(act)
+        rules.append({
+            "_id":             _next_id(),
+            "condition":       cond,
+            "condition_value": cond_vals[0] if cond_vals else "",
+            "action":          act,
+            "action_value":    act_vals[0]  if act_vals  else "",
             "active":          True,
         })
 
-    def _add_row(self, rule_data):
-        if self.rows == [] and self.placeholder.winfo_manager():
-            self.placeholder.pack_forget()
-
-        row = RuleRow(self.rules_frame, rule_data, self)
-        row.frame.pack(fill="x", pady=2)
-        self.rows.append(row)
-        self._sync_scroll_region()
-
-    def remove_rule(self, row):
-        row.frame.destroy()
-        self.rows.remove(row)
-        if not self.rows:
-            self.placeholder.pack()
-        self._sync_scroll_region()
-
-    # ── Data helpers ──────────────────────────────────────────────────────────
-
-    def _collect(self):
-        return [row.get_data() for row in self.rows]
-
-    # ── Button actions ────────────────────────────────────────────────────────
-
-    def save_and_exit(self):
-        save_settings(self._collect())
-        self.root.destroy()
-
-    def save_and_execute(self):
-        rules = self._collect()
-        save_settings(rules)
-        if self.project and self.media_pool:
-            execute_rules(rules, self.project, self.media_pool)
-        self.root.destroy()
-
-    def run(self):
-        self.root.mainloop()
-
-
-# ─── Entry point ──────────────────────────────────────────────────────────────
-
-def main():
-    if not HAS_TK:
-        print(
-            "[MediaImportRules] Error: tkinter is not available.\n"
-            "Make sure DaVinci Resolve is using a Python build that includes Tk/Tcl."
-        )
-        return
-
-    _resolve, project, media_pool = get_resolve_context()
-
-    MediaImportRulesApp(project, media_pool).run()
-
-
-main()
+    elif action and action.startswith("remove_"):
+        r_id  = int(action[len("remove_"):])
+        rules = [r for r in rules if r["_id"] != r_id]
