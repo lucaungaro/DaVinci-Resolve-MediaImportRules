@@ -247,7 +247,7 @@ def _build_window(rules):
         wx, wy = 100, 100
 
     # Cap height so the window never grows taller than ~600 px.
-    win_h = min(600, max(148, 88 + len(rules) * 46))
+    win_h = min(600, max(190, 100 + len(rules) * 46))
 
     return dispatcher.AddWindow(
         {
