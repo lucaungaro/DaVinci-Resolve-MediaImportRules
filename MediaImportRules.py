@@ -67,7 +67,11 @@ CLIP_COLORS = [
     "Teal", "Navy", "Blue", "Purple", "Violet", "Pink",
     "Tan", "Beige", "Brown", "Chocolate",
 ]
-FLAG_COLORS  = ["Red", "Blue", "Green", "Yellow", "Cyan", "Magenta"]
+FLAG_COLORS  = [
+    "Blue", "Cyan", "Green", "Yellow", "Orange", "Red",
+    "Pink", "Purple", "Fuchsia", "Rose", "Lavender", "Sky",
+    "Mint", "Lemon", "Sand", "Cocoa", "Cream", "White",
+]
 # ACES_OPTIONS = ["None", "Standard - LMT"]  # standby
 
 KEY_ESCAPE = 16777216
@@ -223,7 +227,8 @@ def _build_window(rules):
                 ui.ComboBox({"ID": f"actval_{rid}",  "Weight": 1}),
                 ui.CheckBox({"ID": f"active_{rid}", "Text": "Active",
                              "Checked": r.get("active", True), "Weight": 0}),
-                ui.Button(  {"ID": f"remove_{rid}", "Text": "✕", "Weight": 0}),
+                ui.Button(  {"ID": f"remove_{rid}", "Text": "✕",
+                             "Weight": 0, "MaximumSize": [28, 28]}),
             ])
         )
 
@@ -233,21 +238,37 @@ def _build_window(rules):
                       "Alignment": {"AlignHCenter": True}, "Weight": 0}),
         ]
 
+    # Position window near the current cursor so it opens on the active screen.
+    try:
+        pos = fusion.GetMousePos()
+        wx  = max(0, int(pos["x"]) - 480)
+        wy  = max(0, int(pos["y"]) - 80)
+    except Exception:
+        wx, wy = 100, 100
+
+    # Cap height so the window never grows taller than ~600 px.
+    win_h = min(600, max(148, 88 + len(rules) * 46))
+
     return dispatcher.AddWindow(
         {
-            "ID":          WIN_ID,
-            "WindowTitle": "Media Import Rules",
-            "Geometry":    [100, 100, 960, max(148, 108 + len(rules) * 46)],
-            "Events":      {"KeyPress": True},
+            "ID":             WIN_ID,
+            "WindowTitle":    "Media Import Rules",
+            "Geometry":       [wx, wy, 960, win_h],
+            "MinimumSize":    [760, 148],
+            "WindowFlags":    {"Dialog": True},
+            "WindowModality": "ApplicationModal",
+            "Events":         {"KeyPress": True},
         },
         [
             ui.VGroup({"Spacing": 8, "Margin": 10}, [
+                # ── Toolbar ────────────────────────────────────────────────
                 ui.HGroup({"Weight": 0, "Spacing": 6}, [
                     ui.Button({"ID": "btn_add", "Text": "+ Add Rule", "Weight": 0}),
                     ui.HGap(),
                 ]),
-                ui.VGroup({"Spacing": 4}, rule_rows),
-                ui.VGap(),
+                # ── Rule rows (expand to fill available space) ─────────────
+                ui.VGroup({"Spacing": 4, "Weight": 1}, rule_rows),
+                # ── Bottom bar (always pinned at the bottom) ───────────────
                 ui.HGroup({"Weight": 0, "Spacing": 6}, [
                     ui.Button({"ID": "btn_exit",    "Text": "Save and Exit",    "Weight": 0}),
                     ui.Button({"ID": "btn_execute", "Text": "Save and Execute", "Weight": 0}),
