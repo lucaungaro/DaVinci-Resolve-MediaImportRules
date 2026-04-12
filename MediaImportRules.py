@@ -151,12 +151,14 @@ def get_action_values(action):
 
 def execute_rules(rules):
     active = [r for r in rules if r.get("active", True)]
+    print(f"[MediaImportRules] execute_rules: {len(active)} active rule(s)")
     if not active:
         return
 
     # Collect clips / timeline items once, reuse across all rules.
     mp_clips = _all_clips(media_pool.GetRootFolder()) if media_pool else []
     ti_items = _all_timeline_items()
+    print(f"[MediaImportRules] {len(mp_clips)} media pool clip(s), {len(ti_items)} timeline item(s)")
 
     for rule in active:
         prop     = CONDITION_PROPS.get(rule.get("condition", ""))
@@ -164,7 +166,10 @@ def execute_rules(rules):
         action   = rule.get("action", "")
         act_val  = rule.get("action_value", "").strip()
 
+        print(f"[MediaImportRules] rule: prop={prop!r} cond_val={cond_val!r} action={action!r} act_val={act_val!r}")
+
         if not all([prop, cond_val, action, act_val]):
+            print("[MediaImportRules]  → skipped (incomplete rule)")
             continue
 
         if action == "Add to group":
@@ -184,7 +189,9 @@ def execute_rules(rules):
 
         elif action == "Flags":
             for clip in mp_clips:
-                if str(clip.GetClipProperty(prop) or "").strip() == cond_val:
+                clip_val = str(clip.GetClipProperty(prop) or "").strip()
+                print(f"[MediaImportRules]  clip {clip.GetName()!r}: {prop!r}={clip_val!r} == {cond_val!r} ? {clip_val == cond_val}")
+                if clip_val == cond_val:
                     clip.AddFlag(act_val)
 
         elif action == "Input sizing preset":
