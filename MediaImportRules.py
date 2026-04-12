@@ -59,8 +59,12 @@ ACTIONS = [
     "Clip color",
     "Flags",
     "Input sizing preset",
+    "Pixel aspect ratio",
     # "ACES Gamut Compress",   # standby — API investigation pending
 ]
+
+# Actions that use a free-text input instead of a combo box for their value.
+TEXT_INPUT_ACTIONS = {"Pixel aspect ratio"}
 
 CLIP_COLORS = [
     "Orange", "Apricot", "Yellow", "Lime", "Olive", "Green",
@@ -112,13 +116,16 @@ def _all_clips(folder):
     return clips
 
 def _all_timeline_items():
-    """All video TimelineItems across every track of the current timeline."""
-    timeline = project.GetCurrentTimeline() if project else None
-    if not timeline:
+    """All video TimelineItems across every track of every timeline in the project."""
+    if not project:
         return []
     items = []
-    for i in range(1, timeline.GetTrackCount("video") + 1):
-        items.extend(timeline.GetItemListInTrack("video", i) or [])
+    for i in range(1, project.GetTimelineCount() + 1):
+        timeline = project.GetTimelineByIndex(i)
+        if not timeline:
+            continue
+        for t in range(1, timeline.GetTrackCount("video") + 1):
+            items.extend(timeline.GetItemListInTrack("video", t) or [])
     return items
 
 # Populated at startup; read-only after that.
@@ -143,22 +150,30 @@ def get_action_values(action):
         return FLAG_COLORS
     if action == "Input sizing preset":
         return _input_sizing_presets
+    if action in TEXT_INPUT_ACTIONS:
+        return []   # text input — no combo values
     # if action == "ACES Gamut Compress":  # standby
     #     return ACES_OPTIONS
     return []
+
+def _parse_par(value):
+    """Convert user input (e.g. '1', '1.5', '1,5') to a float, or None if invalid."""
+    try:
+        return float(str(value).strip().replace(",", "."))
+    except (ValueError, TypeError):
+        return None
 
 # ── Rule execution ────────────────────────────────────────────────────────────
 
 def execute_rules(rules):
     active = [r for r in rules if r.get("active", True)]
-    print(f"[MediaImportRules] execute_rules: {len(active)} active rule(s)")
     if not active:
         return
 
-    # Collect clips / timeline items once, reuse across all rules.
-    mp_clips = _all_clips(media_pool.GetRootFolder()) if media_pool else []
+    # Collect timeline items once; reuse across all rules.
+    # AddFlag, SetClipColor, AssignToColorGroup all live on TimelineItem, not MediaPoolItem.
     ti_items = _all_timeline_items()
-    print(f"[MediaImportRules] {len(mp_clips)} media pool clip(s), {len(ti_items)} timeline item(s)")
+    mp_clips = _all_clips(media_pool.GetRootFolder()) if media_pool else []
 
     for rule in active:
         prop     = CONDITION_PROPS.get(rule.get("condition", ""))
@@ -166,38 +181,50 @@ def execute_rules(rules):
         action   = rule.get("action", "")
         act_val  = rule.get("action_value", "").strip()
 
-        print(f"[MediaImportRules] rule: prop={prop!r} cond_val={cond_val!r} action={action!r} act_val={act_val!r}")
-
         if not all([prop, cond_val, action, act_val]):
-            print("[MediaImportRules]  → skipped (incomplete rule)")
             continue
 
+        rule_label = f"{rule.get('condition')} is {cond_val!r} → {action} = {act_val}"
+
+        def _ti_matches(ti):
+            mpi = ti.GetMediaPoolItem()
+            return mpi and str(mpi.GetClipProperty(prop) or "").strip() == cond_val
+
         if action == "Add to group":
-            # ColorGroup.AssignToColorGroup() lives on TimelineItem.
             cg = next((g for g in _color_groups if g.GetName() == act_val), None)
             if not cg:
                 continue
             for ti in ti_items:
-                mpi = ti.GetMediaPoolItem()
-                if mpi and str(mpi.GetClipProperty(prop) or "").strip() == cond_val:
+                if _ti_matches(ti):
                     ti.AssignToColorGroup(cg)
+                    print(f"[MediaImportRules] Rule: {rule_label} | Match: {ti.GetMediaPoolItem().GetClipProperty(prop)!r} | Item: {ti.GetName()!r} | Action: assigned to color group {act_val}")
 
         elif action == "Clip color":
             for clip in mp_clips:
                 if str(clip.GetClipProperty(prop) or "").strip() == cond_val:
                     clip.SetClipColor(act_val)
+                    print(f"[MediaImportRules] Rule: {rule_label} | Match: {clip.GetClipProperty(prop)!r} | Item: {clip.GetName()!r} | Action: set clip color to {act_val}")
 
         elif action == "Flags":
             for clip in mp_clips:
-                clip_val = str(clip.GetClipProperty(prop) or "").strip()
-                print(f"[MediaImportRules]  clip {clip.GetName()!r}: {prop!r}={clip_val!r} == {cond_val!r} ? {clip_val == cond_val}")
-                if clip_val == cond_val:
+                if str(clip.GetClipProperty(prop) or "").strip() == cond_val:
                     clip.AddFlag(act_val)
+                    print(f"[MediaImportRules] Rule: {rule_label} | Match: {clip.GetClipProperty(prop)!r} | Item: {clip.GetName()!r} | Action: added flag {act_val}")
 
         elif action == "Input sizing preset":
             for clip in mp_clips:
                 if str(clip.GetClipProperty(prop) or "").strip() == cond_val:
                     clip.SetClipProperty("Input Sizing Preset", act_val)
+                    print(f"[MediaImportRules] Rule: {rule_label} | Match: {clip.GetClipProperty(prop)!r} | Item: {clip.GetName()!r} | Action: set input sizing preset to {act_val}")
+
+        elif action == "Pixel aspect ratio":
+            par = _parse_par(act_val)
+            if par is None:
+                continue
+            for clip in mp_clips:
+                if str(clip.GetClipProperty(prop) or "").strip() == cond_val:
+                    clip.SetClipProperty("PAR", str(par))
+                    print(f"[MediaImportRules] Rule: {rule_label} | Match: {clip.GetClipProperty(prop)!r} | Item: {clip.GetName()!r} | Action: set PAR to {par}")
 
         # elif action == "ACES Gamut Compress":  # standby
         #     for clip in mp_clips:
@@ -233,15 +260,18 @@ def _next_id():
 def _build_window(rules):
     rule_rows = []
     for r in rules:
-        rid = r["_id"]
+        rid      = r["_id"]
+        is_text  = r.get("action", "") in TEXT_INPUT_ACTIONS
         rule_rows.append(
             ui.HGroup({"Weight": 0, "Spacing": 6}, [
-                ui.ComboBox({"ID": f"cond_{rid}",    "Weight": 1}),
-                ui.Label(  {"Text": "is", "Weight": 0}),
-                ui.ComboBox({"ID": f"condval_{rid}", "Weight": 1}),
-                ui.Label(  {"Text": "→", "Weight": 0}),
-                ui.ComboBox({"ID": f"act_{rid}",     "Weight": 1}),
-                ui.ComboBox({"ID": f"actval_{rid}",  "Weight": 1}),
+                ui.ComboBox({"ID": f"cond_{rid}",       "Weight": 1}),
+                ui.Label(  {"Text": "is",               "Weight": 0}),
+                ui.ComboBox({"ID": f"condval_{rid}",    "Weight": 1}),
+                ui.Label(  {"Text": "→",                "Weight": 0}),
+                ui.ComboBox({"ID": f"act_{rid}",        "Weight": 1}),
+                ui.ComboBox({"ID": f"actval_{rid}",     "Weight": 1, "Visible": not is_text}),
+                ui.LineEdit({"ID": f"actval_text_{rid}", "Weight": 1, "Visible": is_text,
+                             "PlaceholderText": "e.g. 1.0"}),
                 ui.CheckBox({"ID": f"active_{rid}", "Text": "Active",
                              "Checked": r.get("active", True), "Weight": 0}),
                 ui.Button(  {"ID": f"remove_{rid}", "Text": "✕",
@@ -321,23 +351,32 @@ def _populate_combos(win, rules):
             cb.AddItem(a)
         cb.CurrentIndex = ACTIONS.index(r["action"]) if r["action"] in ACTIONS else 0
 
-        act_vals = get_action_values(r["action"])
-        cb = items[f"actval_{rid}"]
-        cb.Clear()
-        for v in act_vals:
-            cb.AddItem(v)
-        if r["action_value"] in act_vals:
-            cb.CurrentIndex = act_vals.index(r["action_value"])
+        is_text = r["action"] in TEXT_INPUT_ACTIONS
+        items[f"actval_{rid}"].Visible      = not is_text
+        items[f"actval_text_{rid}"].Visible = is_text
+        if is_text:
+            items[f"actval_text_{rid}"].Text = r.get("action_value", "")
+        else:
+            act_vals = get_action_values(r["action"])
+            cb = items[f"actval_{rid}"]
+            cb.Clear()
+            for v in act_vals:
+                cb.AddItem(v)
+            if r["action_value"] in act_vals:
+                cb.CurrentIndex = act_vals.index(r["action_value"])
 
 
 def _collect_rules(win, rules):
     items = win.GetItems()
     for r in rules:
-        rid = r["_id"]
+        rid    = r["_id"]
+        action = items[f"act_{rid}"].CurrentText
         r["condition"]       = items[f"cond_{rid}"].CurrentText
         r["condition_value"] = items[f"condval_{rid}"].CurrentText
-        r["action"]          = items[f"act_{rid}"].CurrentText
-        r["action_value"]    = items[f"actval_{rid}"].CurrentText
+        r["action"]          = action
+        r["action_value"]    = (items[f"actval_text_{rid}"].Text
+                                if action in TEXT_INPUT_ACTIONS
+                                else items[f"actval_{rid}"].CurrentText)
         r["active"]          = items[f"active_{rid}"].Checked
 
 
@@ -392,21 +431,33 @@ def _setup_handlers(win, rules):
 
         def _make_act_changed(r_id):
             def handler(ev):
-                new_act = items[f"act_{r_id}"].CurrentText
-                cb = items[f"actval_{r_id}"]
-                cb.Clear()
-                vals = get_action_values(new_act)
-                for v in vals:
-                    cb.AddItem(v)
+                new_act  = items[f"act_{r_id}"].CurrentText
+                is_text  = new_act in TEXT_INPUT_ACTIONS
+                combo    = items[f"actval_{r_id}"]
+                tf       = items[f"actval_text_{r_id}"]
+                combo.Visible = not is_text
+                tf.Visible    = is_text
                 for rule in rules:
                     if rule["_id"] == r_id:
-                        if new_act == rule["action"] and rule["action_value"] in vals:
-                            # Event fired during init (action unchanged): restore saved value.
-                            cb.CurrentIndex = vals.index(rule["action_value"])
+                        if is_text:
+                            if new_act == rule["action"]:
+                                # Init event: restore saved text value.
+                                tf.Text = rule.get("action_value", "")
+                            else:
+                                rule["action"]       = new_act
+                                rule["action_value"] = ""
+                                tf.Text = ""
                         else:
-                            # User picked a different action: reset to first item.
-                            rule["action"]       = new_act
-                            rule["action_value"] = vals[0] if vals else ""
+                            vals = get_action_values(new_act)
+                            combo.Clear()
+                            for v in vals:
+                                combo.AddItem(v)
+                            if new_act == rule["action"] and rule["action_value"] in vals:
+                                # Init event: restore saved combo value.
+                                combo.CurrentIndex = vals.index(rule["action_value"])
+                            else:
+                                rule["action"]       = new_act
+                                rule["action_value"] = vals[0] if vals else ""
                         break
             return handler
 
@@ -448,6 +499,8 @@ while True:
 
     elif action == "execute":
         save_settings(rules)
+        if _win:
+            _win.Hide()
         execute_rules(rules)
         break
 
