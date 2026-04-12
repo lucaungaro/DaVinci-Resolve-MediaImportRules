@@ -103,10 +103,6 @@ def _fetch_input_sizing_presets():
     values.discard("")
     return sorted(values)
 
-# Populated at startup; read-only after that.
-_color_groups         = _fetch_color_groups()
-_input_sizing_presets = _fetch_input_sizing_presets()
-
 # ── Media pool / timeline helpers ─────────────────────────────────────────────
 
 def _all_clips(folder):
@@ -124,6 +120,11 @@ def _all_timeline_items():
     for i in range(1, timeline.GetTrackCount("video") + 1):
         items.extend(timeline.GetItemListInTrack("video", i) or [])
     return items
+
+# Populated at startup; read-only after that.
+_color_groups         = _fetch_color_groups()
+_input_sizing_presets = _fetch_input_sizing_presets()
+
 
 def get_unique_values(condition):
     prop = CONDITION_PROPS.get(condition)
