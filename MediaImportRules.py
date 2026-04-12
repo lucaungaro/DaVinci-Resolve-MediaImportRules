@@ -58,7 +58,7 @@ ACTIONS = [
     "Add to group",
     "Clip color",
     "Flags",
-    # "Input sizing preset",   # standby — API investigation pending
+    "Input sizing preset",
     # "ACES Gamut Compress",   # standby — API investigation pending
 ]
 
@@ -91,12 +91,21 @@ def _fetch_color_groups():
         return []
     return list(project.GetColorGroupsList() or [])
 
-# def _fetch_input_sizing_presets():  # standby — API investigation pending
-#     ...
+def _fetch_input_sizing_presets():
+    """
+    Scan every clip in the media pool and return the sorted unique non-empty
+    values of GetClipProperty("Input Sizing Preset").
+    """
+    if not media_pool:
+        return []
+    clips  = _all_clips(media_pool.GetRootFolder())
+    values = {str(c.GetClipProperty("Input Sizing Preset") or "").strip() for c in clips}
+    values.discard("")
+    return sorted(values)
 
 # Populated at startup; read-only after that.
-_color_groups = _fetch_color_groups()  # [ColorGroup, ...]
-# _input_sizing_presets = _fetch_input_sizing_presets()  # standby
+_color_groups         = _fetch_color_groups()
+_input_sizing_presets = _fetch_input_sizing_presets()
 
 # ── Media pool / timeline helpers ─────────────────────────────────────────────
 
@@ -131,8 +140,8 @@ def get_action_values(action):
         return CLIP_COLORS
     if action == "Flags":
         return FLAG_COLORS
-    # if action == "Input sizing preset":  # standby
-    #     return _input_sizing_presets
+    if action == "Input sizing preset":
+        return _input_sizing_presets
     # if action == "ACES Gamut Compress":  # standby
     #     return ACES_OPTIONS
     return []
@@ -177,10 +186,10 @@ def execute_rules(rules):
                 if str(clip.GetClipProperty(prop) or "").strip() == cond_val:
                     clip.AddFlag(act_val)
 
-        # elif action == "Input sizing preset":  # standby
-        #     for clip in mp_clips:
-        #         if str(clip.GetClipProperty(prop) or "").strip() == cond_val:
-        #             clip.SetClipProperty("Input Sizing Preset", act_val)
+        elif action == "Input sizing preset":
+            for clip in mp_clips:
+                if str(clip.GetClipProperty(prop) or "").strip() == cond_val:
+                    clip.SetClipProperty("Input Sizing Preset", act_val)
 
         # elif action == "ACES Gamut Compress":  # standby
         #     for clip in mp_clips:
