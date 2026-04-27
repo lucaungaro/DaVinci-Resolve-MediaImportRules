@@ -100,7 +100,6 @@ Condition values are fetched dynamically from all clips in the Media Pool at plu
 | **Add to group** | Assigns matching timeline items to a Color Group (values fetched from the project's Color Groups) |
 | **Clip color** | Sets the clip color on matching Media Pool items |
 | **Flags** | Adds a flag color to matching Media Pool items |
-| **Input sizing preset** | Sets the Input Sizing Preset on matching Media Pool items (values fetched from clips in the Media Pool) |
 | **Pixel aspect ratio** | Sets the PAR on matching Media Pool items — fixed list: `Square`, `1.25`, `1.33`, `1.5`, `1.8`, `2.0` |
 
 **Add to group** operates on timeline items across all timelines in the project. All other actions operate on Media Pool items directly.
