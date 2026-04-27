@@ -300,7 +300,7 @@ def _build_window(rules):
                         ui.ComboBox({"ID": f"condval_{rid}", "Weight": 1}),
                         ui.CheckBox({"ID": f"and_{rid}", "Text": "And",
                                      "Checked": True, "Weight": 0}),
-                        ui.HGap(),
+                        ui.HGap(515),
                     ]),
                     ui.HGroup({"Weight": 0, "Spacing": 6}, [
                         ui.Label({"Text": "", "Weight": 0, "MinimumSize": [32, 0]}),
