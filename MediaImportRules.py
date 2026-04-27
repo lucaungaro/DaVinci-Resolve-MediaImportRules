@@ -58,7 +58,7 @@ ACTIONS = [
     "Add to group",
     "Clip color",
     "Flags",
-    "Input sizing preset",
+    # "Input sizing preset",   # standby
     "Pixel aspect ratio",
     # "ACES Gamut Compress",   # standby — API investigation pending
 ]
@@ -147,8 +147,8 @@ def get_action_values(action):
         return CLIP_COLORS
     if action == "Flags":
         return FLAG_COLORS
-    if action == "Input sizing preset":
-        return _input_sizing_presets
+    # if action == "Input sizing preset":   # standby
+    #     return _input_sizing_presets
     if action == "Pixel aspect ratio":
         return PAR_VALUES
     # if action == "ACES Gamut Compress":  # standby
@@ -222,11 +222,11 @@ def execute_rules(rules):
                     clip.AddFlag(act_val)
                     print(f"[MediaImportRules] Rule: {label} | Item: {clip.GetName()!r} | Action: added flag {act_val}")
 
-        elif action == "Input sizing preset":
-            for clip in mp_clips:
-                if _matches(clip, rule):
-                    clip.SetClipProperty("Input Sizing Preset", act_val)
-                    print(f"[MediaImportRules] Rule: {label} | Item: {clip.GetName()!r} | Action: set input sizing preset to {act_val}")
+        # elif action == "Input sizing preset":   # standby
+        #     for clip in mp_clips:
+        #         if _matches(clip, rule):
+        #             clip.SetClipProperty("Input Sizing Preset", act_val)
+        #             print(f"[MediaImportRules] Rule: {label} | Item: {clip.GetName()!r} | Action: set input sizing preset to {act_val}")
 
         elif action == "Pixel aspect ratio":
             for clip in mp_clips:
