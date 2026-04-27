@@ -6,7 +6,7 @@ A DaVinci Resolve Workflow Integration plugin that applies bulk metadata-based a
 Inspired by Filmlight [Daylight](https://www.filmlight.ltd.uk/products/daylight/overview_dl.php)'s Media Import Rules menu, this plugin offers a similar rule-based approach — albeit more limited — directly inside DaVinci Resolve, with no external dependencies.
 
 <img width="1072" height="454" alt="Capture d’écran 2026-04-27 à 19 59 28" src="https://github.com/user-attachments/assets/86df6e28-e6af-431b-ba2d-8476a3b72d16" />
----
+
 
 ## Overview
 
