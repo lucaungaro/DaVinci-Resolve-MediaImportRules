@@ -44,7 +44,11 @@ SETTINGS_FILE = os.path.join(_PLUGINS_DIR, "MediaImportRules.json")
 
 # ── Domain constants ──────────────────────────────────────────────────────────
 
-CONDITIONS = ["Resolution", "Shot Frame Rate", "Video Codec", "Camera #", "Camera Type"]
+CONDITIONS = [
+    "Resolution", "Shot Frame Rate", "Video Codec",
+    "Camera #", "Camera Type",
+    "Lens Type", "Lens Number", "LUT Used",
+]
 
 CONDITION_PROPS = {
     "Resolution":      "Resolution",
@@ -52,6 +56,9 @@ CONDITION_PROPS = {
     "Video Codec":     "Video Codec",
     "Camera #":        "Camera #",
     "Camera Type":     "Camera Type",
+    "Lens Type":       "Lens Type",
+    "Lens Number":     "Lens Number",
+    "LUT Used":        "LUT Used",
 }
 
 ACTIONS = [
