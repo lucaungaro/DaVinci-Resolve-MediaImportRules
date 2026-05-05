@@ -20,7 +20,7 @@ Each rule can optionally add a second condition (AND logic). Rules are saved bet
 
 ## Requirements
 
-- DaVinci Resolve 18 or higher
+- DaVinci Resolve Studio 18 or higher
 - No external Python packages required
 
 ---
@@ -88,6 +88,9 @@ Rules are stored in `MediaImportRules.json` alongside the plugin file.
 | Video Codec | `Video Codec` |
 | Camera # | `Camera #` |
 | Camera Type | `Camera Type` |
+| Lens Type | `Lens Type` |
+| Lens Number | `Lens Number` |
+| LUT Used | `LUT Used` |
 
 Condition values are fetched dynamically from all clips in the Media Pool at plugin launch.
 
@@ -98,8 +101,9 @@ Condition values are fetched dynamically from all clips in the Media Pool at plu
 | Action | Description |
 |---|---|
 | **Add to group** | Assigns matching timeline items to a Color Group (values fetched from the project's Color Groups) |
-| **Clip color** | Sets the clip color on matching Media Pool items |
-| **Flags** | Adds a flag color to matching Media Pool items |
+| **Apply grade** | Applies the node tree from a DRX file selected on the local filesystem |
+| **Set clip color** | Sets the clip color on matching Media Pool items |
+| **Add flag** | Adds a flag color to matching Media Pool items |
 | **Pixel aspect ratio** | Sets the PAR on matching Media Pool items — fixed list: `Square`, `1.25`, `1.33`, `1.5`, `1.8`, `2.0` |
 
 **Add to group** operates on timeline items across all timelines in the project. All other actions operate on Media Pool items directly.
