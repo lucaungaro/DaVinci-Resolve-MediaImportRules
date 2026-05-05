@@ -65,6 +65,8 @@ ACTIONS = [
 
 PAR_VALUES = ["Square", "1.25", "1.33", "1.5", "1.8", "2.0"]
 
+APPLY_TO_OPTIONS = ["All clips", "Selected clips"]
+
 CLIP_COLORS = [
     "Orange", "Apricot", "Yellow", "Lime", "Olive", "Green",
     "Teal", "Navy", "Blue", "Purple", "Violet", "Pink",
@@ -113,6 +115,15 @@ def _all_clips(folder):
     for sub in folder.GetSubFolderList() or []:
         clips.extend(_all_clips(sub))
     return clips
+
+def _selected_clips():
+    """Return the clips currently selected in the Media Pool, or [] if none/unsupported."""
+    if not media_pool:
+        return []
+    try:
+        return list(media_pool.GetSelectedClips() or [])
+    except Exception:
+        return []
 
 def _all_timeline_items():
     """All video TimelineItems across every track of every timeline in the project."""
@@ -183,13 +194,24 @@ def _rule_label(rule):
         return f"{rule.get('condition')} is {cond_val!r} AND {c2} is {v2!r} → {action} = {act_val}"
     return f"{rule.get('condition')} is {cond_val!r} → {action} = {act_val}"
 
-def execute_rules(rules):
+def execute_rules(rules, apply_to="All clips"):
     active = [r for r in rules if r.get("active", True)]
     if not active:
         return
 
-    ti_items = _all_timeline_items()
-    mp_clips = _all_clips(media_pool.GetRootFolder()) if media_pool else []
+    if apply_to == "Selected clips":
+        mp_clips = _selected_clips()
+        if not mp_clips:
+            print("[MediaImportRules] No clips selected in Media Pool — nothing to apply.")
+            return
+        # Cross-reference timeline items by file path so Add to group respects selection too.
+        selected_paths = {clip.GetClipProperty("File Path") for clip in mp_clips}
+        ti_items = [ti for ti in _all_timeline_items()
+                    if ti.GetMediaPoolItem() and
+                    ti.GetMediaPoolItem().GetClipProperty("File Path") in selected_paths]
+    else:
+        mp_clips = _all_clips(media_pool.GetRootFolder()) if media_pool else []
+        ti_items = _all_timeline_items()
 
     for rule in active:
         action  = rule.get("action", "")
@@ -242,18 +264,26 @@ def execute_rules(rules):
 # ── Settings I/O ──────────────────────────────────────────────────────────────
 
 def load_settings():
+    """Return (rules, apply_to) from disk, with safe defaults."""
     if not os.path.exists(SETTINGS_FILE):
-        return []
+        return [], "All clips"
     try:
         with open(SETTINGS_FILE, "r", encoding="utf-8") as f:
-            return json.load(f).get("rules", [])
+            data = json.load(f)
+        apply_to = data.get("apply_to", "All clips")
+        if apply_to not in APPLY_TO_OPTIONS:
+            apply_to = "All clips"
+        return data.get("rules", []), apply_to
     except Exception:
-        return []
+        return [], "All clips"
 
-def save_settings(rules):
-    data = [{k: v for k, v in r.items() if k != "_id"} for r in rules]
+def save_settings(rules, apply_to):
+    data = {
+        "apply_to": apply_to,
+        "rules": [{k: v for k, v in r.items() if k != "_id"} for r in rules],
+    }
     with open(SETTINGS_FILE, "w", encoding="utf-8") as f:
-        json.dump({"rules": data}, f, indent=2, ensure_ascii=False)
+        json.dump(data, f, indent=2, ensure_ascii=False)
 
 # ── UI ────────────────────────────────────────────────────────────────────────
 
@@ -360,6 +390,9 @@ def _build_window(rules):
                 ui.VGroup({"Spacing": 4, "Weight": 0}, rule_rows),
                 # ── Bottom bar (always pinned at the bottom) ───────────────
                 ui.HGroup({"Weight": 0, "Spacing": 6}, [
+                    ui.Label(  {"Text": "Apply to", "Weight": 0}),
+                    ui.ComboBox({"ID": "apply_to",  "Weight": 0}),
+                    ui.HGap(40),
                     ui.Button({"ID": "btn_exit",    "Text": "Save and Exit",    "Weight": 0}),
                     ui.Button({"ID": "btn_execute", "Text": "Save and Execute", "Weight": 0}),
                     ui.HGap(),
@@ -371,6 +404,15 @@ def _build_window(rules):
 
 def _populate_combos(win, rules):
     items = win.GetItems()
+
+    # ── Apply-to combo ────────────────────────────────────────────────────────
+    cb = items["apply_to"]
+    cb.Clear()
+    for opt in APPLY_TO_OPTIONS:
+        cb.AddItem(opt)
+    if _apply_to in APPLY_TO_OPTIONS:
+        cb.CurrentIndex = APPLY_TO_OPTIONS.index(_apply_to)
+
     for r in rules:
         rid = r["_id"]
 
@@ -423,7 +465,9 @@ def _populate_combos(win, rules):
 
 
 def _collect_rules(win, rules):
-    items = win.GetItems()
+    global _apply_to
+    items     = win.GetItems()
+    _apply_to = items["apply_to"].CurrentText
     for r in rules:
         rid = r["_id"]
         r["condition"]       = items[f"cond_{rid}"].CurrentText
@@ -550,8 +594,9 @@ def _run_window(rules):
     return _pending_action
 
 
+_loaded_rules, _apply_to = load_settings()
 rules = []
-for _rd in load_settings():
+for _rd in _loaded_rules:
     _rd["_id"] = _next_id()
     rules.append(_rd)
 
@@ -560,14 +605,14 @@ while True:
 
     if action in ("exit", "close", None):
         if action == "exit":
-            save_settings(rules)
+            save_settings(rules, _apply_to)
         break
 
     elif action == "execute":
-        save_settings(rules)
+        save_settings(rules, _apply_to)
         if _win:
             _win.Hide()
-        execute_rules(rules)
+        execute_rules(rules, apply_to=_apply_to)
         break
 
     elif action == "add":
