@@ -63,16 +63,20 @@ CONDITION_PROPS = {
 
 ACTIONS = [
     "Add to group",
-    "Clip color",
-    "Flags",
+    "Apply grade",
+    "Set clip color",
+    "Add flag",
     # "Input sizing preset",   # standby
-    "Pixel aspect ratio",
+    "Set pixel aspect ratio",
     # "ACES Gamut Compress",   # standby — API investigation pending
 ]
 
 PAR_VALUES = ["Square", "1.25", "1.33", "1.5", "1.8", "2.0"]
 
 APPLY_TO_OPTIONS = ["All clips", "Selected clips"]
+
+# Actions whose value is a file path picked via a button rather than a combo box.
+DRX_ACTIONS = {"Apply grade"}
 
 CLIP_COLORS = [
     "Orange", "Apricot", "Yellow", "Lime", "Olive", "Green",
@@ -161,13 +165,15 @@ def get_unique_values(condition):
 def get_action_values(action):
     if action == "Add to group":
         return [cg.GetName() for cg in _color_groups]
-    if action == "Clip color":
+    if action in DRX_ACTIONS:
+        return []   # value is a file path picked via button, not a combo
+    if action == "Set clip color":
         return CLIP_COLORS
-    if action == "Flags":
+    if action == "Add flag":
         return FLAG_COLORS
     # if action == "Input sizing preset":   # standby
     #     return _input_sizing_presets
-    if action == "Pixel aspect ratio":
+    if action == "Set pixel aspect ratio":
         return PAR_VALUES
     # if action == "ACES Gamut Compress":  # standby
     #     return ACES_OPTIONS
@@ -211,14 +217,14 @@ def execute_rules(rules, apply_to="All clips"):
         if not mp_clips:
             print("[MediaImportRules] No clips selected in Media Pool — nothing to apply.")
             return
-        # Cross-reference timeline items by file path so Add to group respects selection too.
         selected_paths = {clip.GetClipProperty("File Path") for clip in mp_clips}
         ti_items = [ti for ti in _all_timeline_items()
                     if ti.GetMediaPoolItem() and
                     ti.GetMediaPoolItem().GetClipProperty("File Path") in selected_paths]
     else:
-        mp_clips = _all_clips(media_pool.GetRootFolder()) if media_pool else []
-        ti_items = _all_timeline_items()
+        mp_clips       = _all_clips(media_pool.GetRootFolder()) if media_pool else []
+        ti_items       = _all_timeline_items()
+        selected_paths = None   # None = no path filter
 
     for rule in active:
         action  = rule.get("action", "")
@@ -239,13 +245,29 @@ def execute_rules(rules, apply_to="All clips"):
                     ti.AssignToColorGroup(cg)
                     print(f"[MediaImportRules] Rule: {label} | Item: {ti.GetName()!r} | Action: assigned to color group {act_val}")
 
-        elif action == "Clip color":
+        elif action == "Apply grade":
+            drx_path = act_val
+            if not drx_path or not os.path.isfile(drx_path):
+                print(f"[MediaImportRules] Rule: {label} | DRX file not found: {drx_path!r}")
+                continue
+            for ti in ti_items:
+                mpi = ti.GetMediaPoolItem()
+                if not mpi or not _matches(mpi, rule):
+                    continue
+                graph = ti.GetNodeGraph()
+                if graph:
+                    graph.ApplyGradeFromDRX(drx_path, 0)
+                    print(f"[MediaImportRules] Rule: {label} | Item: {ti.GetName()!r} | Action: applied grade from {os.path.basename(drx_path)!r}")
+                else:
+                    print(f"[MediaImportRules] Rule: {label} | Item: {ti.GetName()!r} | Could not get node graph")
+
+        elif action == "Set clip color":
             for clip in mp_clips:
                 if _matches(clip, rule):
                     clip.SetClipColor(act_val)
                     print(f"[MediaImportRules] Rule: {label} | Item: {clip.GetName()!r} | Action: set clip color to {act_val}")
 
-        elif action == "Flags":
+        elif action == "Add flag":
             for clip in mp_clips:
                 if _matches(clip, rule):
                     clip.AddFlag(act_val)
@@ -257,7 +279,7 @@ def execute_rules(rules, apply_to="All clips"):
         #             clip.SetClipProperty("Input Sizing Preset", act_val)
         #             print(f"[MediaImportRules] Rule: {label} | Item: {clip.GetName()!r} | Action: set input sizing preset to {act_val}")
 
-        elif action == "Pixel aspect ratio":
+        elif action == "Set pixel aspect ratio":
             for clip in mp_clips:
                 if _matches(clip, rule):
                     clip.SetClipProperty("PAR", act_val)
@@ -308,6 +330,15 @@ def _build_window(rules):
         rid     = r["_id"]
         has_and = r.get("and_condition", False)
 
+        is_drx   = r.get("action", "") in DRX_ACTIONS
+        drx_text = os.path.basename(r.get("action_value", "")) or "Select DRX…"
+
+        def _actval_widgets(rid, is_drx, drx_text):
+            if is_drx:
+                return [ui.Button({"ID": f"actval_drx_{rid}", "Weight": 1, "Text": drx_text})]
+            else:
+                return [ui.ComboBox({"ID": f"actval_{rid}", "Weight": 1})]
+
         if not has_and:
             # Single-condition row
             rule_rows.append(
@@ -319,7 +350,7 @@ def _build_window(rules):
                                  "Checked": False, "Weight": 0}),
                     ui.Label(  {"Text": "→",             "Weight": 0}),
                     ui.ComboBox({"ID": f"act_{rid}",     "Weight": 1}),
-                    ui.ComboBox({"ID": f"actval_{rid}",  "Weight": 1}),
+                    *_actval_widgets(rid, is_drx, drx_text),
                     ui.CheckBox({"ID": f"active_{rid}", "Text": "Active",
                                  "Checked": r.get("active", True), "Weight": 0}),
                     ui.Button(  {"ID": f"remove_{rid}", "Text": "✕",
@@ -346,7 +377,7 @@ def _build_window(rules):
                         ui.ComboBox({"ID": f"cond2val_{rid}",  "Weight": 1}),
                         ui.Label(  {"Text": "→",               "Weight": 0}),
                         ui.ComboBox({"ID": f"act_{rid}",       "Weight": 1}),
-                        ui.ComboBox({"ID": f"actval_{rid}",    "Weight": 1}),
+                        *_actval_widgets(rid, is_drx, drx_text),
                         ui.CheckBox({"ID": f"active_{rid}", "Text": "Active",
                                      "Checked": r.get("active", True), "Weight": 0}),
                         ui.Button(  {"ID": f"remove_{rid}", "Text": "✕",
@@ -462,13 +493,17 @@ def _populate_combos(win, rules):
             cb.AddItem(a)
         cb.CurrentIndex = ACTIONS.index(r["action"]) if r["action"] in ACTIONS else 0
 
-        act_vals = get_action_values(r["action"])
-        cb = items[f"actval_{rid}"]
-        cb.Clear()
-        for v in act_vals:
-            cb.AddItem(v)
-        if r["action_value"] in act_vals:
-            cb.CurrentIndex = act_vals.index(r["action_value"])
+        if r["action"] in DRX_ACTIONS:
+            path = r.get("action_value", "")
+            items[f"actval_drx_{rid}"].Text = os.path.basename(path) if path else "Select DRX…"
+        else:
+            act_vals = get_action_values(r["action"])
+            cb = items[f"actval_{rid}"]
+            cb.Clear()
+            for v in act_vals:
+                cb.AddItem(v)
+            if r["action_value"] in act_vals:
+                cb.CurrentIndex = act_vals.index(r["action_value"])
 
 
 def _collect_rules(win, rules):
@@ -477,12 +512,14 @@ def _collect_rules(win, rules):
     _apply_to = items["apply_to"].CurrentText
     for r in rules:
         rid = r["_id"]
-        r["condition"]       = items[f"cond_{rid}"].CurrentText
+        r["condition"]     = items[f"cond_{rid}"].CurrentText
         r["condition_value"] = items[f"condval_{rid}"].CurrentText
-        r["and_condition"]   = items[f"and_{rid}"].Checked
-        r["action"]          = items[f"act_{rid}"].CurrentText
-        r["action_value"]    = items[f"actval_{rid}"].CurrentText
-        r["active"]          = items[f"active_{rid}"].Checked
+        r["and_condition"] = items[f"and_{rid}"].Checked
+        r["action"]        = items[f"act_{rid}"].CurrentText
+        r["active"]        = items[f"active_{rid}"].Checked
+        # DRX path is updated directly in rule dict by the picker button handler.
+        if r["action"] not in DRX_ACTIONS:
+            r["action_value"] = items[f"actval_{rid}"].CurrentText
         # cond2 widgets only exist when the layout was built with and=True
         if f"cond2_{rid}" in items:
             r["condition2"]       = items[f"cond2_{rid}"].CurrentText
@@ -559,26 +596,46 @@ def _setup_handlers(win, rules):
 
         def _make_act_changed(r_id):
             def handler(ev):
-                new_act = items[f"act_{r_id}"].CurrentText
-                cb = items[f"actval_{r_id}"]
-                cb.Clear()
-                vals = get_action_values(new_act)
-                for v in vals:
-                    cb.AddItem(v)
+                new_act  = items[f"act_{r_id}"].CurrentText
+                is_drx   = new_act in DRX_ACTIONS
                 for rule in rules:
                     if rule["_id"] == r_id:
-                        if new_act == rule["action"] and rule["action_value"] in vals:
-                            cb.CurrentIndex = vals.index(rule["action_value"])
+                        was_drx = rule["action"] in DRX_ACTIONS
+                        if new_act == rule["action"]:
+                            return  # init event — nothing to do
+                        rule["action"] = new_act
+                        if is_drx != was_drx:
+                            # Widget type must change — trigger a rebuild.
+                            rule["action_value"] = "" if is_drx else (get_action_values(new_act) or [""])[0]
+                            signal(f"toggle_drx_{r_id}")
                         else:
-                            rule["action"]       = new_act
+                            # Same widget type — update the combo in place.
+                            cb   = items[f"actval_{r_id}"]
+                            vals = get_action_values(new_act)
+                            cb.Clear()
+                            for v in vals:
+                                cb.AddItem(v)
                             rule["action_value"] = vals[0] if vals else ""
                         break
+            return handler
+
+        def _make_drx_pick(r_id):
+            def handler(ev):
+                path = fusion.RequestFile("")
+                if path and os.path.isfile(path):
+                    for rule in rules:
+                        if rule["_id"] == r_id:
+                            rule["action_value"] = path
+                            items[f"actval_drx_{r_id}"].Text = os.path.basename(path)
+                            break
             return handler
 
         win.On[f"remove_{rid}"].Clicked           = _make_remove(rid)
         win.On[f"and_{rid}"].Clicked              = _make_and_toggled(rid)
         win.On[f"cond_{rid}"].CurrentIndexChanged = _make_cond_changed(rid)
         win.On[f"act_{rid}"].CurrentIndexChanged  = _make_act_changed(rid)
+        if r.get("action") in DRX_ACTIONS:
+            win.On[f"actval_drx_{rid}"].Clicked   = _make_drx_pick(rid)
         if r.get("and_condition", False):
             win.On[f"cond2_{rid}"].CurrentIndexChanged = _make_cond2_changed(rid)
 
